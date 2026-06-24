@@ -1,0 +1,75 @@
+<%-
+  # ---------------------------------------------------------------------------
+  # Phase B: launch a user-supplied Jupyter image in the Cirrus Kubernetes
+  # cluster. The image comes from the `custom_image` form field.
+  #
+  # The init containers (from the ood-k8s-utils image) do three things before
+  # Jupyter starts:
+  #   1. generate a one-time password and store it as a k8s secret
+  #   2. inject the hashed password into the notebook config (configmap)
+  #   3. inject the OnDemand reverse-proxy base_url (/node/HOST/PORT/)
+  # OnDemand reads back the host/port/password to render the Connect button.
+  # ---------------------------------------------------------------------------
+  configmap_filename = "ondemand_config.py"
+
+  # Public mirror of OSC's helper image. Pin a real tag before production use.
+  utility_img = "docker.io/ohiosupercomputer/ood-k8s-utils:latest"
+
+  # Lines the init containers append to the notebook config at runtime.
+  pwd_cfg       = "c.NotebookApp.password=u'sha1:${SALT}:${PASSWORD_SHA1}'"
+  host_port_cfg = "c.NotebookApp.base_url='/node/${HOST_CFG}/${PORT_CFG}/'"
+
+  user = OodSupport::User.new
+-%>
+---
+script:
+  wall_time: "<%= wall_time.to_i * 3600 %>"
+  native:
+    container:
+      name: "jupyter"
+      image: "<%= custom_image.strip %>"
+      command: "/usr/local/bin/start.sh jupyter notebook --config=/ood/ondemand_config.py"
+      working_dir: "<%= user.home %>"
+      restart_policy: "OnFailure"
+      env:
+        NB_UID: "<%= user.uid %>"
+        NB_USER: "<%= user.name %>"
+        NB_GID: "<%= user.group.id %>"
+        HOME: "<%= user.home %>"
+      port: 8080
+      cpu: "<%= cpu %>"
+      memory: "<%= memory %>Gi"
+    configmap:
+      files:
+        - filename: "<%= configmap_filename %>"
+          data: |
+            c.NotebookApp.port = 8080
+            c.NotebookApp.ip = '0.0.0.0'
+            c.NotebookApp.disable_check_xsrf = True
+            c.NotebookApp.allow_origin = '*'
+            c.Application.log_level = 'DEBUG'
+          mount_path: "/ood"
+    mounts:
+      - type: host
+        name: home
+        host_type: Directory
+        path: "<%= user.home %>"
+        destination_path: "<%= user.home %>"
+    init_containers:
+      - name: "init-secret"
+        image: "<%= utility_img %>"
+        command:
+          - "/bin/save_passwd_as_secret"
+          - "user-<%= user.name %>"
+      - name: "add-passwd-to-cfg"
+        image: "<%= utility_img %>"
+        command:
+          - "/bin/bash"
+          - "-c"
+          - "source /bin/passwd_from_secret; source /bin/create_salt_and_sha1; /bin/add_line_to_configmap \"<%= pwd_cfg %>\" <%= configmap_filename %>"
+      - name: "add-hostport-to-cfg"
+        image: "<%= utility_img %>"
+        command:
+          - "/bin/bash"
+          - "-c"
+          - "source /bin/find_host_port; /bin/add_line_to_configmap \"<%= host_port_cfg %>\" <%= configmap_filename %>"

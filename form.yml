@@ -1,0 +1,44 @@
+---
+cluster: "cirrus"
+
+form:
+  - custom_image
+  - cpu
+  - memory
+  - wall_time
+
+attributes:
+  custom_image:
+    widget: text_field
+    label: "Container image"
+    value: "quay.io/jupyter/scipy-notebook:latest"
+    help: |
+      Any Jupyter Docker Stacks-compatible image (must contain `/usr/local/bin/start.sh`
+      and `jupyter`), reachable from the Cirrus cluster. Examples:
+      `quay.io/jupyter/scipy-notebook:latest`, `quay.io/jupyter/datascience-notebook:latest`,
+      `quay.io/jupyter/tensorflow-notebook:latest`.
+    required: true
+  cpu:
+    widget: number_field
+    label: "CPUs"
+    min: 1
+    max: 8
+    value: 1
+    step: 1
+    required: true
+  memory:
+    widget: number_field
+    label: "Memory (GB)"
+    min: 1
+    max: 32
+    value: 4
+    step: 1
+    required: true
+  wall_time:
+    widget: number_field
+    label: "Wall time (hours)"
+    min: 1
+    max: 24
+    value: 1
+    step: 1
+    required: true

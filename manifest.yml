@@ -1,0 +1,8 @@
+---
+name: Jupyter (Kubernetes, custom image)
+category: Interactive Apps
+subcategory: Servers
+role: batch_connect
+description: |
+  This app launches a Jupyter Notebook server in the Cirrus Kubernetes cluster
+  using a container image that you specify.
