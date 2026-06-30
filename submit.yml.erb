@@ -45,10 +45,10 @@
   # whitespace, no quotes, no '#', no YAML/shell metacharacters -- so there's
   # nothing left that can break either this file's YAML or pod.yml.erb's
   # unquoted re-emission of it, however it's combined.
-  custom_image = custom_image.to_s.strip
+  image_ref = custom_image.to_s.strip
   IMAGE_REF_PATTERN = /\A[A-Za-z0-9][A-Za-z0-9._\-\/:@]{0,254}\z/
-  unless custom_image.match?(IMAGE_REF_PATTERN)
-    raise "Invalid container image reference: #{custom_image.inspect}. " \
+  unless image_ref.match?(IMAGE_REF_PATTERN)
+    raise "Invalid container image reference: #{image_ref.inspect}. " \
           "Expected something like registry.example.com/namespace/image:tag " \
           "(letters, digits, '.', '_', '-', '/', ':', '@' only; no spaces or quotes)."
   end
@@ -59,7 +59,7 @@ script:
   native:
     container:
       name: "jupyter"
-      image: "<%= custom_image %>"
+      image: "<%= image_ref %>"
       command: "/usr/local/bin/start.sh jupyter notebook --config=/ood/ondemand_config.py"
       working_dir: "<%= user.home %>"
       restart_policy: "OnFailure"
