@@ -9,17 +9,48 @@
   #   2. inject the hashed password into the notebook config (configmap)
   #   3. inject the OnDemand reverse-proxy base_url (/node/HOST/PORT/)
   # OnDemand reads back the host/port/password to render the Connect button.
+  #
+  # NOTE on `custom_image` validation: ood_core's pod.yml.erb emits the main
+  # container's image field completely unquoted (just "image:" followed by
+  # the bare substituted value, no surrounding quotes), unlike every other
+  # string field in that template. Since this value comes straight from a
+  # user-submitted form field, an unvalidated value containing a colon-space,
+  # a #, or a blank line can corrupt or restructure the generated Pod
+  # manifest -- this isn't hypothetical, a value as mundane as someone
+  # pasting "Image: foo/bar:tag" out of habit breaks the submission. Rather
+  # than try to out-escape an upstream template we don't control, we
+  # validate at the door: reject anything that doesn't look like a plain
+  # image reference before it ever reaches the YAML. This also covers the
+  # local double-quote risk where this value gets substituted into our own
+  # quoted YAML scalar a few lines down, for free, since the same disallowed
+  # characters (quotes, whitespace, #) can't reach either layer.
+  #
+  # NOTE on the two `add-line-to-configmap` calls below: see the writeup in
+  # the Phase A file for why these build the apostrophe via `printf` instead
+  # of wrapping the substitution in escaped double quotes -- same upstream
+  # pod.yml.erb behavior (it re-embeds command strings in another
+  # double-quoted YAML scalar without escaping them), same fix.
   # ---------------------------------------------------------------------------
   configmap_filename = "ondemand_config.py"
 
   # Public mirror of OSC's helper image. Pin a real tag before production use.
   utility_img = "docker.io/ohiosupercomputer/ood-k8s-utils:latest"
 
-  # Lines the init containers append to the notebook config at runtime.
-  pwd_cfg       = "c.NotebookApp.password=u'sha1:${SALT}:${PASSWORD_SHA1}'"
-  host_port_cfg = "c.NotebookApp.base_url='/node/${HOST_CFG}/${PORT_CFG}/'"
-
   user = OodSupport::User.new
+
+  # Validate the user-supplied image reference before it touches any YAML.
+  # Deliberately conservative: alphanumeric start, then the limited set of
+  # characters real registry/repo/tag/digest references actually use. No
+  # whitespace, no quotes, no '#', no YAML/shell metacharacters -- so there's
+  # nothing left that can break either this file's YAML or pod.yml.erb's
+  # unquoted re-emission of it, however it's combined.
+  custom_image = custom_image.to_s.strip
+  IMAGE_REF_PATTERN = /\A[A-Za-z0-9][A-Za-z0-9._\-\/:@]{0,254}\z/
+  unless custom_image.match?(IMAGE_REF_PATTERN)
+    raise "Invalid container image reference: #{custom_image.inspect}. " \
+          "Expected something like registry.example.com/namespace/image:tag " \
+          "(letters, digits, '.', '_', '-', '/', ':', '@' only; no spaces or quotes)."
+  end
 -%>
 ---
 script:
@@ -27,7 +58,7 @@ script:
   native:
     container:
       name: "jupyter"
-      image: "<%= custom_image.strip %>"
+      image: "<%= custom_image %>"
       command: "/usr/local/bin/start.sh jupyter notebook --config=/ood/ondemand_config.py"
       working_dir: "<%= user.home %>"
       restart_policy: "OnFailure"
@@ -66,10 +97,10 @@ script:
         command:
           - "/bin/bash"
           - "-c"
-          - "source /bin/passwd_from_secret; source /bin/create_salt_and_sha1; /bin/add_line_to_configmap \"<%= pwd_cfg %>\" <%= configmap_filename %>"
+          - "source /bin/passwd_from_secret; source /bin/create_salt_and_sha1; Q=$(printf '\\\\047'); /bin/add_line_to_configmap c.NotebookApp.password=u${Q}sha1:${SALT}:${PASSWORD_SHA1}${Q} <%= configmap_filename %>"
       - name: "add-hostport-to-cfg"
         image: "<%= utility_img %>"
         command:
           - "/bin/bash"
           - "-c"
-          - "source /bin/find_host_port; /bin/add_line_to_configmap \"<%= host_port_cfg %>\" <%= configmap_filename %>"
+          - "source /bin/find_host_port; Q=$(printf '\\\\047'); /bin/add_line_to_configmap c.NotebookApp.base_url=${Q}/node/${HOST_CFG}/${PORT_CFG}/${Q} <%= configmap_filename %>"
