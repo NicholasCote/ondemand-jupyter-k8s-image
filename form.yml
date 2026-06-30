@@ -11,7 +11,7 @@ attributes:
   custom_image:
     widget: text_field
     label: "Container image"
-    value: "quay.io/jupyter/scipy-notebook:latest"
+    value: "hub.k8s.ucar.edu/cirrus-jhub/jhub-cpu-nb:0.1.5"
     help: |
       Any Jupyter Docker Stacks-compatible image (must contain `/usr/local/bin/start.sh`
       and `jupyter`), reachable from the Cirrus cluster. Examples:
