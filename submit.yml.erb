@@ -81,12 +81,6 @@ script:
             c.NotebookApp.allow_origin = '*'
             c.Application.log_level = 'DEBUG'
           mount_path: "/ood"
-    mounts:
-      - type: host
-        name: home
-        host_type: Directory
-        path: "<%= user.home %>"
-        destination_path: "<%= user.home %>"
     init_containers:
       - name: "init-secret"
         image: "<%= utility_img %>"
