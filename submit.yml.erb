@@ -60,7 +60,7 @@ script:
     container:
       name: "jupyter"
       image: "<%= image_ref %>"
-      command: "/usr/local/bin/start.sh jupyter notebook --config=/ood/ondemand_config.py"
+      command: "/srv/start jupyter notebook --config=/ood/ondemand_config.py"
       restart_policy: "OnFailure"
       env:
         NB_UID: "<%= user.uid %>"
