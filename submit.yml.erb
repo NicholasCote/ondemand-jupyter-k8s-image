@@ -2,6 +2,19 @@
   configmap_filename = "ondemand_config.py"
   utility_img = "docker.io/ohiosupercomputer/ood-k8s-utils:latest"
   user = OodSupport::User.new
+
+  # Validate the user-supplied image reference before it touches any YAML.
+  # ood_core's pod.yml.erb emits the main container's image field unquoted,
+  # so a value containing ": ", "#", or a newline can restructure the
+  # generated Pod manifest. Rather than out-escape a template we don't
+  # control, reject anything that isn't a plain image reference at the door.
+  image_ref = custom_image.to_s.strip
+  image_ref_pattern = /\A[A-Za-z0-9][A-Za-z0-9._\-\/:@]{0,254}\z/
+  unless image_ref.match?(image_ref_pattern)
+    raise "Invalid container image reference: #{image_ref.inspect}. " \
+          "Expected something like registry.example.com/namespace/image:tag " \
+          "(letters, digits, '.', '_', '-', '/', ':', '@' only; no spaces or quotes)."
+  end
 -%>
 ---
 script:

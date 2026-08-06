@@ -1,27 +1,43 @@
 # Jupyter (Kubernetes, custom image) — OnDemand app
 
-An OpenOnDemand `batch_connect` app that launches Jupyter in the **Cirrus**
-Kubernetes cluster using a **container image the user specifies** on the launch form.
+An OpenOnDemand `batch_connect` app that launches Jupyter Lab in the **Cirrus**
+Kubernetes cluster using a **container image the user specifies** on the launch
+form.
 
-This is **Phase B** of a three-part effort:
+## What it does
 
-- **Phase A:** fixed image — [`ondemand-jupyter-k8s`](https://github.com/NicholasCote/ondemand-jupyter-k8s).
-- **Phase B (this repo):** user supplies any image.
-- **Phase C:** Binder-style build from a git URL — [`ondemand-jupyter-binder`](https://github.com/NicholasCote/ondemand-jupyter-binder).
+- The launch form asks for a container image plus CPUs, memory, and wall time.
+- `submit.yml.erb` renders a Kubernetes pod spec that runs Jupyter Lab from that
+  image on port 8080, with the user's NFS home directory mounted at `$HOME`.
+- Init containers (from `ohiosupercomputer/ood-k8s-utils`) generate a per-session
+  password, hash it into the Jupyter config, and set `base_url` to the assigned
+  node and NodePort so OnDemand can proxy the session.
+- `view.html.erb` renders a **Connect to Jupyter** button that posts the
+  generated password to log the user in.
 
-## What's different from Phase A
+## Choosing an image
 
-- `form.yml` adds a required **Container image** text field (`custom_image`).
-- `submit.yml.erb` uses `<%= custom_image.strip %>` as the container image.
+The image must be Jupyter Docker Stacks-compatible — it needs
+`/usr/local/bin/start.sh` and `/opt/conda/bin/jupyter` — and must be reachable
+from the Cirrus cluster. Examples:
 
-The image must be a Jupyter Docker Stacks-compatible image (contains
-`/usr/local/bin/start.sh` and `jupyter`) and reachable from Cirrus. Examples:
-`quay.io/jupyter/scipy-notebook:latest`, `quay.io/jupyter/datascience-notebook:latest`.
+- `hub.k8s.ucar.edu/cirrus-jhub/jhub-cpu-nb:0.1.5` (form default)
+- `quay.io/jupyter/scipy-notebook:latest`
+- `quay.io/jupyter/datascience-notebook:latest`
+- `quay.io/jupyter/tensorflow-notebook:latest`
+
+## Files
+
+| File | Purpose |
+| --- | --- |
+| `manifest.yml` | App name, category, and description shown in OnDemand |
+| `form.yml` | Launch form fields (image, CPUs, memory, wall time) |
+| `submit.yml.erb` | Kubernetes container spec, mounts, configmap, init containers |
+| `view.html.erb` | Session connect button |
+| `template/` | `batch_connect` template directory |
 
 ## Deploy as a dev app
 
-**Develop → My Sandbox Apps → New App**, give it a directory name and this repo's
-**HTTPS** git URL. App files are at the repo root so OnDemand finds `manifest.yml`.
-
-See the Phase A repo for the first-launch verification checklist (helper image,
-`$HOME` mount, RBAC, Jupyter config class) — it applies here too.
+**Develop → My Sandbox Apps → New App**, give it a directory name and this
+repo's **HTTPS** git URL. App files live at the repo root so OnDemand finds
+`manifest.yml`.
