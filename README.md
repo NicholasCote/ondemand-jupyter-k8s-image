@@ -21,7 +21,6 @@ The image must be Jupyter Docker Stacks-compatible — it needs
 `/usr/local/bin/start.sh` and `/opt/conda/bin/jupyter` — and must be reachable
 from the Cirrus cluster. Examples:
 
-- `hub.k8s.ucar.edu/cirrus-jhub/jhub-cpu-nb:0.1.5` (form default)
 - `quay.io/jupyter/scipy-notebook:latest`
 - `quay.io/jupyter/datascience-notebook:latest`
 - `quay.io/jupyter/tensorflow-notebook:latest`
