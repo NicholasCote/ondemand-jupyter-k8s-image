@@ -122,47 +122,6 @@ script:
             [ -n "${WRAP:-}" ] && exec "$WRAP" "$JUP" "$@"
             exec "$JUP" "$@"
           mount_path: "/ood-launch"
-        # Give the UID we run as a name.
-        #
-        # The pod's securityContext is runAsUser: <the user's real UID>, but the
-        # image's /etc/passwd only knows the UID it was built with (1000/jovyan
-        # for docker-stacks). Every getpwuid() lookup then fails, which surfaces
-        # as the "I have no name!" bash prompt and, less visibly, as git,
-        # conda, and ssh tripping over a missing home/shell/username.
-        #
-        # docker-stacks' start.sh already tries to patch /etc/passwd itself, but
-        # only when the file is writable -- which assumes GID 0. We run as the
-        # user's real GID, so it logs "unable to fix missing /etc/passwd entry"
-        # and carries on nameless. Supplying the file outright works on any
-        # image and needs no cooperation from its entrypoint.
-        #
-        # sub_path is what makes this safe: without it the configmap volume
-        # would mount over all of /etc and take the image's resolv.conf, ssl
-        # certs, and everything else with it. With it, k8s projects this single
-        # key over the single file.
-        #
-        # Shell is hardcoded to /bin/bash rather than taken from the user's HPC
-        # passwd entry: a login shell of /bin/tcsh is common here and almost
-        # never present in a Jupyter image, and a shell that does not exist
-        # breaks terminals just as thoroughly as no passwd entry at all.
-        - filename: "passwd"
-          data: |
-            root:x:0:0:root:/root:/bin/bash
-            <%= user.name %>:x:<%= user.uid %>:<%= user.group.id %>:<%= user.gecos %>:<%= user.home %>:/bin/bash
-            nobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin
-          mount_path: "/etc/passwd"
-          sub_path: "passwd"
-        # Same treatment for the primary group, so `id` and `ls -l` render a
-        # group name instead of a bare number. Supplemental groups (ood_core
-        # adds every group of the user's with GID >= 1000) stay numeric; naming
-        # them is not worth regenerating this file for.
-        - filename: "group"
-          data: |
-            root:x:0:
-            <%= user.group.name %>:x:<%= user.group.id %>:<%= user.name %>
-            nogroup:x:65534:
-          mount_path: "/etc/group"
-          sub_path: "group"
     init_containers:
       - name: "init-secret"
         image: "<%= utility_img %>"
