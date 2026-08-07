@@ -45,6 +45,15 @@ follow, and `submit.yml.erb` handles both:
   with an entry for the real user, mounted with `subPath` so they replace those
   two files and nothing else in `/etc`. Without this, `getpwuid()` fails and the
   session comes up with an `I have no name!` prompt.
+
+  **These files add to the image's accounts, they never replace them.** Keep
+  `jovyan` (1000:100) and the `users` group in there. docker-stacks' `start.sh`
+  runs under `set -e` and does `JOVYAN_UID="$(id -u jovyan 2>/dev/null)"` — drop
+  the account and `id` exits 1, the assignment inherits that status, and the
+  script dies before it ever execs Jupyter. The pod crashloops with exit 1 and
+  no error message, and the last log line is the `start-notebook.d` hooks.
+  Images using the `/srv/start` convention do not make that lookup, so a
+  regression here looks like "works on our images, broken on Docker Stacks".
 - **Home.** The container's `workingDir` is set to the user's NFS home. Images
   bake `WORKDIR /home/jovyan`, and a non-root `start.sh` never `cd`s to `$HOME`,
   so otherwise Jupyter's file browser and terminals open on a container-local

@@ -122,6 +122,72 @@ script:
             [ -n "${WRAP:-}" ] && exec "$WRAP" "$JUP" "$@"
             exec "$JUP" "$@"
           mount_path: "/ood-launch"
+        # Give the UID we run as a name.
+        #
+        # The pod's securityContext is runAsUser: <the user's real UID>, but the
+        # image's /etc/passwd only knows the UID it was built with (1000/jovyan).
+        # Every getpwuid() lookup then fails, which surfaces as the
+        # "I have no name!" bash prompt and, less visibly, as git and conda
+        # tripping over a missing username, home, and shell.
+        #
+        # docker-stacks' start.sh tries to patch /etc/passwd itself, but only
+        # when the file is writable, which assumes GID 0. We run as the user's
+        # real GID, so it logs "unable to fix missing /etc/passwd entry" and
+        # carries on nameless. Supplying the file needs no cooperation from the
+        # image and works on the /srv/start images too, which never attempt it.
+        #
+        # We ADD to the image's accounts, we do not replace them. An earlier
+        # version of this file listed only root, the user, and nobody, which
+        # crashlooped every docker-stacks image: start.sh runs under `set -e`
+        # and line 193 is
+        #
+        #   JOVYAN_UID="$(id -u jovyan 2>/dev/null)"
+        #
+        # `id` exits 1 when the user does not exist, an assignment inherits the
+        # status of its command substitution, and the script died right there --
+        # after the start-notebook.d hooks, before exec'ing jupyter, with no
+        # error message. jovyan (1000:100) is the default user for both
+        # docker-stacks and repo2docker, so it stays, as do the system accounts.
+        #
+        # Order matters: the real user is listed BEFORE jovyan so that if a
+        # user's UID is itself 1000, getpwuid(1000) resolves to them while
+        # getpwnam("jovyan") still succeeds for start.sh.
+        #
+        # sub_path is what makes this safe: without it the configmap volume
+        # would mount over all of /etc and take the image's resolv.conf and ssl
+        # certs with it. With it, k8s projects this one key over that one file.
+        #
+        # Shell is hardcoded to /bin/bash rather than read from the user's HPC
+        # passwd entry: a login shell of /bin/tcsh is common here and almost
+        # never present in a Jupyter image, and a shell that does not exist
+        # breaks terminals as thoroughly as no passwd entry at all.
+        - filename: "passwd"
+          data: |
+            root:x:0:0:root:/root:/bin/bash
+            daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin
+            bin:x:2:2:bin:/bin:/usr/sbin/nologin
+            sys:x:3:3:sys:/dev:/usr/sbin/nologin
+            <%= user.name %>:x:<%= user.uid %>:<%= user.group.id %>:<%= user.gecos %>:<%= user.home %>:/bin/bash
+            jovyan:x:1000:100:default container user:/home/jovyan:/bin/bash
+            nobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin
+          mount_path: "/etc/passwd"
+          sub_path: "passwd"
+        # Same treatment for groups, so `id` and `ls -l` render names instead of
+        # bare numbers. users (100) is jovyan's primary group and is kept for
+        # the same reason jovyan is. Supplemental groups (ood_core adds every
+        # group of the user's with GID >= 1000) stay numeric; naming them is not
+        # worth regenerating this file for.
+        - filename: "group"
+          data: |
+            root:x:0:
+            daemon:x:1:
+            bin:x:2:
+            sys:x:3:
+            <%= user.group.name %>:x:<%= user.group.id %>:<%= user.name %>
+            users:x:100:jovyan
+            nogroup:x:65534:
+          mount_path: "/etc/group"
+          sub_path: "group"
     init_containers:
       - name: "init-secret"
         image: "<%= utility_img %>"
