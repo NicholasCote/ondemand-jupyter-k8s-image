@@ -1,0 +1,22 @@
+<%#
+  Rendered into the session card body by the dashboard, so a user running
+  several sessions at once can tell which image each one is.
+
+  The card otherwise shows only host, times, and session id -- all identical
+  across sessions of this app -- and the app title is fixed by manifest.yml,
+  so the image is invisible once the launch form is gone.
+
+  ERB binding here is the BatchConnect::Session itself, which is where
+  user_context comes from: the launch form values, read back from
+  user_defined_context.json in the session's staged directory. Keys are form
+  attribute ids, so this must track form.yml's `custom_image`.
+
+  Escaped because user_context holds the raw form input and the markdown
+  renderer returns html_safe output. submit.yml.erb's validation happens
+  before staging, so nothing exotic should ever land here -- but the escape
+  costs nothing and image references never contain characters it touches.
+-%>
+<%- image = user_context["custom_image"].to_s -%>
+<%- unless image.empty? -%>
+**Image:** `<%= ERB::Util.html_escape(image) %>`
+<%- end -%>

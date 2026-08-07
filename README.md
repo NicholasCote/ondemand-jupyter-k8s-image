@@ -14,16 +14,41 @@ form.
   node and NodePort so OnDemand can proxy the session.
 - `view.html.erb` renders a **Connect to Jupyter** button that posts the
   generated password to log the user in.
+- `info.md.erb` prints the image on the session card, so several sessions
+  running side by side can be told apart.
 
 ## Choosing an image
 
-The image must be Jupyter Docker Stacks-compatible — it needs
-`/usr/local/bin/start.sh` and `/opt/conda/bin/jupyter` — and must be reachable
-from the Cirrus cluster. Examples:
+The image needs a `jupyter` executable and must be reachable from the Cirrus
+cluster. `launch.sh` (generated into the pod's configmap by `submit.yml.erb`)
+probes for both layouts in circulation rather than assuming one:
+
+| Convention | Startup wrapper | Jupyter |
+| --- | --- | --- |
+| jupyter/docker-stacks | `/usr/local/bin/start.sh` | `/opt/conda/bin/jupyter` |
+| repo2docker, cirrus | `/srv/start` | `/srv/conda/bin/jupyter` |
+
+Anything else on `PATH` is used as a last resort. Examples:
 
 - `quay.io/jupyter/scipy-notebook:latest`
 - `quay.io/jupyter/datascience-notebook:latest`
 - `quay.io/jupyter/tensorflow-notebook:latest`
+- `hub.k8s.ucar.edu/cirrus-jhub/jhub-cpu-nb:0.1.5`
+
+## Running as the real user
+
+The pod's `securityContext` is the user's own UID and GID, which no stock image
+knows about — its `/etc/passwd` was built around `jovyan` (UID 1000). Two things
+follow, and `submit.yml.erb` handles both:
+
+- **Identity.** `/etc/passwd` and `/etc/group` are supplied from the configmap
+  with an entry for the real user, mounted with `subPath` so they replace those
+  two files and nothing else in `/etc`. Without this, `getpwuid()` fails and the
+  session comes up with an `I have no name!` prompt.
+- **Home.** The container's `workingDir` is set to the user's NFS home. Images
+  bake `WORKDIR /home/jovyan`, and a non-root `start.sh` never `cd`s to `$HOME`,
+  so otherwise Jupyter's file browser and terminals open on a container-local
+  directory that vanishes with the pod.
 
 ## Files
 
@@ -33,6 +58,7 @@ from the Cirrus cluster. Examples:
 | `form.yml` | Launch form fields (image, CPUs, memory, wall time) |
 | `submit.yml.erb` | Kubernetes container spec, mounts, configmap, init containers |
 | `view.html.erb` | Session connect button |
+| `info.md.erb` | Image shown on the session card |
 | `template/` | `batch_connect` template directory |
 
 ## Deploy as a dev app
