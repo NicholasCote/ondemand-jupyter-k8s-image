@@ -23,7 +23,7 @@ script:
     container:
       name: "jupyter"
       image: "<%= image_ref %>"
-      # Launched through /ood/launch.sh (defined in the configmap below) rather
+      # Launched through /ood-launch/launch.sh (defined in the configmap below) rather
       # than by naming the entrypoint directly, because this app runs images we
       # do not control and there are two incompatible conventions in the wild:
       #
@@ -39,7 +39,12 @@ script:
       # pod's `command` array, and a quoted `sh -c '...'` script would not survive
       # if it splits on whitespace. Invoking via /bin/sh also avoids needing the
       # configmap file to be executable, which projected volumes do not guarantee.
-      command: "/bin/sh /ood/launch.sh lab --config=/ood/ondemand_config.py --ServerApp.port=8080 --ServerApp.ip=0.0.0.0"
+      #
+      # /ood-launch, not /ood: ood_core emits one volumeMount per configmap file,
+      # so two files sharing a mount_path produce duplicate mountPaths and the
+      # API server rejects the pod outright --
+      #   spec.containers[0].volumeMounts[1].mountPath: "/ood": must be unique
+      command: "/bin/sh /ood-launch/launch.sh lab --config=/ood/ondemand_config.py --ServerApp.port=8080 --ServerApp.ip=0.0.0.0"
       restart_policy: "OnFailure"
       env:
         NB_UID: "<%= user.uid %>"
@@ -72,6 +77,10 @@ script:
         # image has been pulled anywhere.
         #
         # Deliberately plain /bin/sh -- an image may not ship bash.
+        #
+        # Mounted at its own path. Each entry here becomes a separate volumeMount,
+        # and k8s requires mountPaths to be unique, so this cannot share /ood with
+        # ondemand_config.py.
         - filename: "launch.sh"
           data: |
             #!/bin/sh
@@ -103,7 +112,7 @@ script:
 
             [ -n "${WRAP:-}" ] && exec "$WRAP" "$JUP" "$@"
             exec "$JUP" "$@"
-          mount_path: "/ood"
+          mount_path: "/ood-launch"
     init_containers:
       - name: "init-secret"
         image: "<%= utility_img %>"
