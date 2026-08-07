@@ -23,7 +23,23 @@ script:
     container:
       name: "jupyter"
       image: "<%= image_ref %>"
-      command: "/usr/local/bin/start.sh /opt/conda/bin/jupyter lab --config=/ood/ondemand_config.py --ServerApp.port=8080 --ServerApp.ip=0.0.0.0"
+      # Launched through /ood/launch.sh (defined in the configmap below) rather
+      # than by naming the entrypoint directly, because this app runs images we
+      # do not control and there are two incompatible conventions in the wild:
+      #
+      #   jupyter/docker-stacks  /usr/local/bin/start.sh  /opt/conda/bin/jupyter
+      #   repo2docker & cirrus   /srv/start               /srv/conda/bin/jupyter
+      #
+      # Naming either one directly fails on the other with a bare
+      # "executable file not found: No such file or directory" at container
+      # create -- no hint about which path was missing, in a message the user
+      # sees before the session ever starts. launch.sh probes for both.
+      #
+      # Every token here is space-free on purpose: ood_core renders this into the
+      # pod's `command` array, and a quoted `sh -c '...'` script would not survive
+      # if it splits on whitespace. Invoking via /bin/sh also avoids needing the
+      # configmap file to be executable, which projected volumes do not guarantee.
+      command: "/bin/sh /ood/launch.sh lab --config=/ood/ondemand_config.py --ServerApp.port=8080 --ServerApp.ip=0.0.0.0"
       restart_policy: "OnFailure"
       env:
         NB_UID: "<%= user.uid %>"
@@ -49,6 +65,44 @@ script:
             c.ServerApp.disable_check_xsrf = True
             c.ServerApp.allow_origin = '*'
             c.Application.log_level = 'DEBUG'
+          mount_path: "/ood"
+        # Resolve the image's layout at runtime, inside the container, which is
+        # the only place that knows what the image actually contains. ERB cannot
+        # do this: it renders on the OnDemand host at submit time, before the
+        # image has been pulled anywhere.
+        #
+        # Deliberately plain /bin/sh -- an image may not ship bash.
+        - filename: "launch.sh"
+          data: |
+            #!/bin/sh
+            # Find the startup wrapper. It is what drops privileges to NB_UID and
+            # sets the session up, so prefer it over exec'ing jupyter directly.
+            for w in /usr/local/bin/start.sh /srv/start; do
+              [ -x "$w" ] && { WRAP="$w"; break; }
+            done
+
+            # Find jupyter. The same split applies here, and getting the wrapper
+            # right while hardcoding the wrong conda prefix just moves the error.
+            for j in /opt/conda/bin/jupyter /srv/conda/bin/jupyter; do
+              [ -x "$j" ] && { JUP="$j"; break; }
+            done
+            # Last resort: whatever is on PATH. Covers layouts we have not seen.
+            [ -n "${JUP:-}" ] || JUP="$(command -v jupyter 2>/dev/null)"
+
+            if [ -z "${JUP:-}" ]; then
+              echo "launch.sh: no jupyter found in this image." >&2
+              echo "  looked in: /opt/conda/bin, /srv/conda/bin, and \$PATH" >&2
+              echo "  PATH=$PATH" >&2
+              exit 127
+            fi
+
+            # Say what was chosen. When a session misbehaves, the first question
+            # is which binaries it actually ran, and kubectl logs should answer it
+            # without anyone having to exec into the pod.
+            echo "launch.sh: wrapper=${WRAP:-<none, exec jupyter directly>} jupyter=${JUP}"
+
+            [ -n "${WRAP:-}" ] && exec "$WRAP" "$JUP" "$@"
+            exec "$JUP" "$@"
           mount_path: "/ood"
     init_containers:
       - name: "init-secret"
