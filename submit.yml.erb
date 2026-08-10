@@ -194,12 +194,35 @@ script:
         command:
           - "/bin/save_passwd_as_secret"
           - "user-<%= user.name %>"
+      # Write the session password under every trait name Jupyter has used for
+      # it, for the same reason launch.sh probes for two directory layouts: we
+      # do not control the image, and the correct name depends on its vintage.
+      #
+      #   c.PasswordIdentityProvider.hashed_password  jupyter_server >= 2.0
+      #   c.ServerApp.password                        jupyter_server 1.x
+      #   c.NotebookApp.password                      classic notebook
+      #
+      # Setting only the first one silently does nothing on an older image:
+      # traitlets warns about unknown *options* on a class it knows, but an
+      # entire unknown class section is ignored without comment. The server
+      # then keeps token auth, the Connect button's POST gets a 401, and the
+      # user lands on "Token authentication is enabled" with no clue why.
+      # Confirmed on an image pinned to jupyter_server 1.21.0 / notebook 6.5.1.
+      #
+      # The extra lines are harmless where they do not apply -- on 2.x they
+      # cost one "ServerApp.password config is deprecated in 2.0" warning, and
+      # the value is identical either way, so nothing can disagree.
+      #
+      # '\\\\047' is not over-escaped: this string is parsed as YAML twice
+      # before bash sees it, once by OnDemand reading this file and once by
+      # kubectl reading the pod spec ood_core renders it into. Each pass halves
+      # the backslashes, leaving printf '\047' -> a single quote.
       - name: "add-passwd-to-cfg"
         image: "<%= utility_img %>"
         command:
           - "/bin/bash"
           - "-c"
-          - "source /bin/passwd_from_secret; source /bin/create_salt_and_sha1; Q=$(printf '\\\\047'); /bin/add_line_to_configmap c.PasswordIdentityProvider.hashed_password=${Q}sha1:${SALT}:${PASSWORD_SHA1}${Q} <%= configmap_filename %>"
+          - "source /bin/passwd_from_secret; source /bin/create_salt_and_sha1; Q=$(printf '\\\\047'); PW=${Q}sha1:${SALT}:${PASSWORD_SHA1}${Q}; for opt in c.PasswordIdentityProvider.hashed_password c.ServerApp.password c.NotebookApp.password; do /bin/add_line_to_configmap ${opt}=${PW} <%= configmap_filename %>; done"
       - name: "add-hostport-to-cfg"
         image: "<%= utility_img %>"
         command:

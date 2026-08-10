@@ -59,6 +59,30 @@ follow, and `submit.yml.erb` handles both:
   so otherwise Jupyter's file browser and terminals open on a container-local
   directory that vanishes with the pod.
 
+## Session password
+
+The `add-passwd-to-cfg` init container writes the generated password into the
+config under three trait names, because the right one depends on how old the
+image's Jupyter is:
+
+| Trait | Applies to |
+| --- | --- |
+| `c.PasswordIdentityProvider.hashed_password` | `jupyter_server` >= 2.0 |
+| `c.ServerApp.password` | `jupyter_server` 1.x |
+| `c.NotebookApp.password` | classic `notebook` |
+
+Writing only the first is a silent failure on an older image. Traitlets warns
+about an unknown *option* on a class it knows, but ignores an entire unknown
+class section without comment, so the server keeps token authentication, the
+Connect button's POST gets a 401, and the user lands on **"Token authentication
+is enabled"** with nothing in the log to explain it. If that page comes back,
+check the image's `jupyter_server` version before anything else.
+
+Note that `ood-k8s-utils`' `create_salt_and_sha1` does `SALT="$(create_passwd 16)"`,
+but `create_passwd` exports `PASSWORD` rather than writing to stdout — so the
+salt is always empty and hashes are unsalted `sha1(password)`. It authenticates
+correctly; it is just weaker than it looks. That is upstream, not this app.
+
 ## Files
 
 | File | Purpose |
