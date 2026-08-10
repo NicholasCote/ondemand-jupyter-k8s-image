@@ -20,3 +20,10 @@
 <%- unless image.empty? -%>
 **Image:** `<%= ERB::Util.html_escape(image) %>`
 <%- end -%>
+<%# GPUs only when some were asked for -- a "GPUs: 0" line on every CPU
+    session is noise, and the card header already reports cores. -%>
+<%- gpus = user_context["gpus"].to_i -%>
+<%- if gpus > 0 -%>
+
+**GPUs:** <%= gpus %> &times; `nvidia.com/gpu`
+<%- end -%>

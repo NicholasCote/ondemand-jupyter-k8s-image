@@ -19,6 +19,23 @@
 ---
 script:
   wall_time: "<%= wall_time.to_i * 3600 %>"
+  # Requested only when the user asked for at least one. ood_core renders this
+  # into the pod's resource limits AND requests as
+  #
+  #   nvidia.com/gpu: <n>
+  #
+  # (the key comes from native.gpu_type, which defaults to nvidia.com/gpu), and
+  # it guards the field with `unless script.gpus_per_node.nil?` -- a nil check,
+  # not a zero check. Emitting 0 would therefore still put the resource key in
+  # the spec; omitting the line keeps a CPU-only session's pod byte-identical
+  # to what this app produced before GPUs were an option.
+  #
+  # to_i is load-bearing, not decoration: this value is interpolated unquoted,
+  # so anything that is not a plain integer could restructure the YAML the same
+  # way an unvalidated image reference could.
+<%- if gpus.to_i > 0 -%>
+  gpus_per_node: <%= gpus.to_i %>
+<%- end -%>
   native:
     container:
       name: "jupyter"

@@ -59,6 +59,44 @@ follow, and `submit.yml.erb` handles both:
   so otherwise Jupyter's file browser and terminals open on a container-local
   directory that vanishes with the pod.
 
+## GPUs
+
+The form's **GPUs** field sets `gpus_per_node`, which ood_core renders into the
+pod's resource limits *and* requests as `nvidia.com/gpu: <n>`. The key comes
+from `native.gpu_type`, which defaults to `nvidia.com/gpu`; set it in
+`submit.yml.erb` if the cluster advertises GPUs under a different name.
+
+Leaving the field at 0 omits the line entirely rather than emitting
+`nvidia.com/gpu: 0`, so a CPU-only session's pod spec is unchanged. ood_core
+guards the field with `unless script.gpus_per_node.nil?` — a nil check, not a
+zero check — so the ERB has to skip the key, not zero it.
+
+Requesting a GPU does not make an image able to use one. The image needs CUDA
+and GPU-enabled framework builds; `quay.io/jupyter/pytorch-notebook` and
+`tensorflow-notebook` qualify, the plain `scipy-notebook` does not.
+
+### If a GPU session sits in Pending
+
+**ood_core's pod template emits `nodeSelector` but has no `tolerations` support
+at all.** If the GPU nodes carry a taint — `nvidia.com/gpu=present:NoSchedule`
+is a common one — this app cannot schedule onto them, and no change to
+`submit.yml.erb` will fix that, because there is no field to set. Check with:
+
+```bash
+kubectl get nodes -o custom-columns=\
+'NODE:.metadata.name,GPU:.status.allocatable.nvidia\.com/gpu,TAINTS:.spec.taints'
+```
+
+If the GPU nodes are tainted, the options are to remove the taint, admit these
+pods with a mutating webhook, or carry a patched pod template. If they are
+merely labelled, add the label under `native.node_selector` in
+`submit.yml.erb`:
+
+```yaml
+    node_selector:
+      nvidia.com/gpu.present: "true"
+```
+
 ## Session password
 
 The `add-passwd-to-cfg` init container writes the generated password into the
