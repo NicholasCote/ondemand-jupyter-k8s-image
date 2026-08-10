@@ -37,14 +37,24 @@ attributes:
     required: true
   gpus:
     widget: check_box
-    label: "GPUs"
+    # A check_box renders its label inline next to the box rather than above
+    # the field, so it does not match the other inputs. `header` is rendered as
+    # markdown above any widget, which puts the field name where the eye
+    # expects it. Needs OnDemand >= 4.1.0; older versions ignore it, in which
+    # case make this a select with Yes/No options instead.
+    header: "**GPUs**"
+    label: "Request an NVIDIA GPU"
     unchecked_value: 0
     checked_value: 1
-    required: true
+    # NOT required. On a checkbox, `required` means "must be checked" -- the
+    # browser refuses to submit the form while the box is empty, which would
+    # make every CPU-only session impossible to launch.
+    required: false
     help: |
-      NVIDIA GPUs to request (`nvidia.com/gpu`). Check the box to start with 1 Nvidia GPU. 
-      The image has to be able to use one — requesting a GPU does not
-      add CUDA or a GPU-enabled framework build to an image that lacks them.
+      Check the box to request one NVIDIA GPU (`nvidia.com/gpu`); leave it clear
+      for a CPU-only session. The image has to be able to use one — requesting a
+      GPU does not add CUDA or a GPU-enabled framework build to an image that
+      lacks them.
   wall_time:
     widget: number_field
     label: "Wall time (hours)"
