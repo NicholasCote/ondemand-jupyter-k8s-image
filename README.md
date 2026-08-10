@@ -54,6 +54,19 @@ follow, and `submit.yml.erb` handles both:
   no error message, and the last log line is the `start-notebook.d` hooks.
   Images using the `/srv/start` convention do not make that lookup, so a
   regression here looks like "works on our images, broken on Docker Stacks".
+
+  **Keep these files minimal and never pad them with system accounts.** Distro
+  families disagree on the numbering — Debian has `daemon`=1 / `bin`=2, RHEL has
+  `bin`=1 / `daemon`=2 — so entries copied from one are wrong on the other, and
+  a wrong name is worse than a missing one because `ls -l` repeats it.
+
+  The cost of mounting these files at all is that GIDs we do not list lose the
+  names the image shipped. The visible case is a GPU session: the runtime adds
+  the group owning `/dev/nvidia*` so the container can open it, which is GID 39
+  (`video`) on RHEL-based images, and `groups` then prints `cannot find name
+  for group ID 39`. The group still works — that is what lets `nvidia-smi` see
+  the card. It cannot be fixed from here: the names are distro-specific and a
+  `subPath` mount replaces a file rather than merging into it.
 - **Home.** The container's `workingDir` is set to the user's NFS home. Images
   bake `WORKDIR /home/jovyan`, and a non-root `start.sh` never `cd`s to `$HOME`,
   so otherwise Jupyter's file browser and terminals open on a container-local

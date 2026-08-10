@@ -178,31 +178,39 @@ script:
         # passwd entry: a login shell of /bin/tcsh is common here and almost
         # never present in a Jupyter image, and a shell that does not exist
         # breaks terminals as thoroughly as no passwd entry at all.
+        # Only the entries that are actually needed, and nothing distro-specific.
+        # An earlier version padded these files with daemon/bin/sys/nobody taken
+        # from a Debian image, which is wrong on a RHEL-based one: those two
+        # families disagree outright (Debian daemon=1 bin=2, RHEL bin=1
+        # daemon=2), so the padding mislabelled real GIDs. A missing name is a
+        # cosmetic annoyance; a wrong name is a lie that `ls -l` repeats.
         - filename: "passwd"
           data: |
             root:x:0:0:root:/root:/bin/bash
-            daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin
-            bin:x:2:2:bin:/bin:/usr/sbin/nologin
-            sys:x:3:3:sys:/dev:/usr/sbin/nologin
             <%= user.name %>:x:<%= user.uid %>:<%= user.group.id %>:<%= user.gecos %>:<%= user.home %>:/bin/bash
             jovyan:x:1000:100:default container user:/home/jovyan:/bin/bash
-            nobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin
           mount_path: "/etc/passwd"
           sub_path: "passwd"
-        # Same treatment for groups, so `id` and `ls -l` render names instead of
-        # bare numbers. users (100) is jovyan's primary group and is kept for
-        # the same reason jovyan is. Supplemental groups (ood_core adds every
-        # group of the user's with GID >= 1000) stay numeric; naming them is not
-        # worth regenerating this file for.
+        # Same treatment for groups, so the user's own group renders as a name.
+        # users (100) is jovyan's primary group and is kept for the same reason
+        # jovyan is.
+        #
+        # Every other GID in the container goes unnamed, and that is a real if
+        # minor cost of mounting this file at all: replacing it hides the names
+        # the image shipped. The visible case is GPU sessions, where the runtime
+        # adds the group owning /dev/nvidia* so the container can open it -- 39
+        # on RHEL-based images, where it is called video. `id` reports it as a
+        # bare 39 and `groups` prints "cannot find name for group ID 39".
+        #
+        # We cannot fix that from here: the names are distro-specific, a subPath
+        # mount replaces the file rather than merging into it, and guessing at
+        # the numbering is exactly the mistake removed above. Unnamed is the
+        # honest outcome; the group still works, which is why nvidia-smi does.
         - filename: "group"
           data: |
             root:x:0:
-            daemon:x:1:
-            bin:x:2:
-            sys:x:3:
             <%= user.group.name %>:x:<%= user.group.id %>:<%= user.name %>
             users:x:100:jovyan
-            nogroup:x:65534:
           mount_path: "/etc/group"
           sub_path: "group"
     init_containers:
