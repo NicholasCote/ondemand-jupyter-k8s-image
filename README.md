@@ -90,6 +90,41 @@ follow, and `submit.yml.erb` handles both:
   so otherwise Jupyter's file browser and terminals open on a container-local
   directory that vanishes with the pod.
 
+## Idle sessions
+
+Sessions end themselves after **1 hour idle**, configured in
+`submit.yml.erb` (`idle_timeout`, one place to change it). Idle kernels and
+terminals are culled first, because the server only considers shutting down
+once nothing is running; then it exits 0, and `restart_policy: OnFailure`
+leaves the pod `Completed` rather than restarting it, releasing the GPU.
+
+This needs no cluster support, which is why it is done here rather than with
+`wall_time`. Kubernetes has no idea how long a Pod has been idle, or how long
+it has been running at all — see the note on wall time below.
+
+Verified end to end: an abandoned kernel is culled, then the server exits.
+
+```
+Culling kernels with idle durations > N seconds at M second intervals
+Culling 'python3' (5f395a0b…) with 0 connections due to inactivity
+-> server exits, code 0
+```
+
+**What this does and does not catch.** `shutdown_no_activity_timeout` measures
+time since the last **HTTP request**, not since the last human action. Measured
+directly: a client polling the API held the server open indefinitely, and it
+shut down 40s after polling stopped. So
+
+- browser closed, laptop asleep, network gone → reclaimed. This is the case
+  that strands GPUs, and it is covered.
+- a tab left open and in the foreground → JupyterLab keeps polling, and the
+  session stays up no matter how long nobody touches it.
+
+`cull_connected` stays `False` on purpose. Culling a kernel that still has a
+browser attached destroys the user's variables while the tab keeps polling, so
+the pod stays up and the GPU is not returned — all of the cost, none of the
+benefit. Only `wall_time` plus a reaper closes that last gap.
+
 ## GPUs
 
 The form's **GPUs** field sets `gpus_per_node`, which ood_core renders into the

@@ -3,6 +3,11 @@
   utility_img = "docker.io/ohiosupercomputer/ood-k8s-utils:latest"
   user = OodSupport::User.new
 
+  # How long a session may sit idle before it ends itself, and how often that
+  # is checked. One place to change both; see the culling settings below.
+  idle_timeout = 3600
+  idle_check_interval = 300
+
   # Validate the user-supplied image reference before it touches any YAML.
   # ood_core's pod.yml.erb emits the main container's image field unquoted,
   # so a value containing ": ", "#", or a newline can restructure the
@@ -96,6 +101,39 @@ script:
             c.ServerApp.disable_check_xsrf = True
             c.ServerApp.allow_origin = '*'
             c.Application.log_level = 'DEBUG'
+
+            # Let an abandoned session end itself, so a forgotten notebook
+            # stops holding a GPU. Nothing in Kubernetes does this for us: a
+            # Pod runs until it exits or someone deletes it, and wall_time is
+            # only an annotation that needs an external reaper to mean
+            # anything. Jupyter shutting itself down needs no cluster support
+            # -- the process exits 0, and restart_policy OnFailure leaves the
+            # pod Completed rather than restarting it, which releases the GPU.
+            #
+            # Idle kernels are culled first, because the server only considers
+            # shutting down once nothing is running. Terminals count as
+            # running too, so they are culled on the same clock; an open
+            # terminal would otherwise pin the session open forever.
+            c.MappingKernelManager.cull_idle_timeout = <%= idle_timeout %>
+            c.MappingKernelManager.cull_interval = <%= idle_check_interval %>
+            # Never interrupt work in progress. A long training run is busy,
+            # not idle, and must not be culled out from under the user.
+            c.MappingKernelManager.cull_busy = False
+            # Deliberately False, which is also the default -- being explicit
+            # because the aggressive setting looks right and is not. Culling a
+            # kernel that still has a browser attached destroys the user's
+            # variables while the tab keeps polling, so the pod stays up and
+            # the GPU is not returned: all of the cost, none of the benefit.
+            # With it False, a closed tab drops to zero connections and the
+            # kernel is culled normally, which is the case worth reclaiming.
+            c.MappingKernelManager.cull_connected = False
+            c.TerminalManager.cull_inactive_timeout = <%= idle_timeout %>
+            c.TerminalManager.cull_interval = <%= idle_check_interval %>
+            # Then shut the server down once nothing is running and no requests
+            # have arrived. Note this tracks HTTP activity, not human activity:
+            # a browser tab left polling holds the session open regardless of
+            # whether anyone is at the keyboard.
+            c.ServerApp.shutdown_no_activity_timeout = <%= idle_timeout %>
           mount_path: "/ood"
         # Resolve the image's layout at runtime, inside the container, which is
         # the only place that knows what the image actually contains. ERB cannot
