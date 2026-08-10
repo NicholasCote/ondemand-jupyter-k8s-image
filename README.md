@@ -60,13 +60,31 @@ follow, and `submit.yml.erb` handles both:
   `bin`=1 / `daemon`=2 — so entries copied from one are wrong on the other, and
   a wrong name is worse than a missing one because `ls -l` repeats it.
 
-  The cost of mounting these files at all is that GIDs we do not list lose the
-  names the image shipped. The visible case is a GPU session: the runtime adds
-  the group owning `/dev/nvidia*` so the container can open it, which is GID 39
-  (`video`) on RHEL-based images, and `groups` then prints `cannot find name
-  for group ID 39`. The group still works — that is what lets `nvidia-smi` see
-  the card. It cannot be fixed from here: the names are distro-specific and a
-  `subPath` mount replaces a file rather than merging into it.
+  `/etc/group` is therefore **seeded from the OnDemand host's own group
+  database** rather than from a hardcoded list. `submit.yml.erb` copies every
+  local group with GID < 1000 out of the host's `/etc/group` verbatim.
+
+  This exists so nothing in a fresh session prints a warning. Mounting the file
+  hides the names the image shipped, and a GID with no name makes `groups` emit
+
+  ```
+  groups: cannot find name for group ID 39
+  ```
+
+  which an end user cannot distinguish from a real fault. GID 39 shows up on
+  GPU sessions: the runtime attaches the group that owns `/dev/nvidia*` so the
+  container can open the device. It is what lets `nvidia-smi` see the card.
+
+  Taking the names from this host is not a workaround, it is the correct
+  source. Supplementary GIDs are assigned by the **node**, not by the image, so
+  the node's numbering is the one that has to be honoured, and the OnDemand
+  host shares it. Reading `/etc/group` directly rather than using `Etc.group`
+  is deliberate: `Etc.group` walks all of NSS including LDAP, and only local
+  system groups belong in a container. The `< 1000` cut keeps it to the system
+  range where injected device groups live.
+
+  If a GID still comes up unnamed, check that this host knows it —
+  `getent group <gid>` on the OnDemand host — before changing anything here.
 - **Home.** The container's `workingDir` is set to the user's NFS home. Images
   bake `WORKDIR /home/jovyan`, and a non-root `start.sh` never `cd`s to `$HOME`,
   so otherwise Jupyter's file browser and terminals open on a container-local
