@@ -139,6 +139,56 @@ script:
             [ -n "${WRAP:-}" ] && exec "$WRAP" "$JUP" "$@"
             exec "$JUP" "$@"
           mount_path: "/ood-launch"
+        # Make `conda activate` work in session terminals.
+        #
+        # Without this the user gets
+        #
+        #   CondaError: Run 'conda init' before 'conda activate'
+        #
+        # and running `conda init` does not help -- it reports success, changes
+        # nothing that matters, and the next terminal fails identically. Two
+        # things combine to cause that:
+        #
+        #   1. jupyter_server_terminals appends "-l" to the shell whenever the
+        #      server's stdout is not a tty, which in a pod it never is. So
+        #      terminals are LOGIN shells, and a login shell reads /etc/profile
+        #      and ~/.bash_profile -- never ~/.bashrc, which is the only file
+        #      `conda init` writes to.
+        #   2. Docker Stacks images put their conda hook in /home/jovyan/.bashrc
+        #      and ship no /etc/profile.d entry at all. Since HOME is the user's
+        #      NFS home, that file is not read either.
+        #
+        # /etc/profile.d is the one hook both distro families source for login
+        # shells, so that is where this goes. Mounting here is additive -- a
+        # filename no image ships, in a directory that already exists -- so
+        # unlike /etc/passwd it hides nothing.
+        #
+        # The conda prefix is probed rather than assumed, for the same reason
+        # launch.sh probes: /opt/conda, /srv/conda and /opt/ncar/conda are all
+        # in use across the images people actually launch here.
+        #
+        # Guarded on BASH_VERSION because `conda shell.bash hook` emits bash
+        # syntax and /etc/profile.d is also sourced by dash. Every failure is
+        # swallowed: a login shell that cannot find conda must still be a
+        # working shell.
+        - filename: "conda_profile.sh"
+          data: |
+            if [ -n "${BASH_VERSION:-}" ]; then
+              __ood_conda=""
+              for __ood_c in /opt/conda/bin/conda /srv/conda/bin/conda; do
+                if [ -x "${__ood_c}" ]; then __ood_conda="${__ood_c}"; break; fi
+              done
+              if [ -z "${__ood_conda}" ]; then __ood_conda="$(command -v conda 2>/dev/null)"; fi
+              if [ -n "${__ood_conda}" ]; then
+                __ood_hook="$("${__ood_conda}" shell.bash hook 2>/dev/null)" && eval "${__ood_hook}"
+              fi
+              unset __ood_conda __ood_hook __ood_c
+            fi
+          # zz- so this runs after anything the image installs here. The
+          # /srv/start images already set conda up themselves and re-evaluating
+          # the hook after them is harmless -- verified, not assumed.
+          mount_path: "/etc/profile.d/zz-ood-conda.sh"
+          sub_path: "conda_profile.sh"
         # Give the UID we run as a name.
         #
         # The pod's securityContext is runAsUser: <the user's real UID>, but the

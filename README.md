@@ -128,6 +128,32 @@ merely labelled, add the label under `native.node_selector` in
       nvidia.com/gpu.present: "true"
 ```
 
+## `conda activate` in session terminals
+
+Sessions mount a small `/etc/profile.d/zz-ood-conda.sh` that evaluates the
+image's conda shell hook. Without it, a terminal gives
+
+```
+CondaError: Run 'conda init' before 'conda activate'
+```
+
+and running `conda init` does not help — it reports success, and the next
+terminal fails the same way. Two things combine:
+
+- `jupyter_server_terminals` appends `-l` to the shell whenever the server's
+  stdout is not a tty, which in a pod it never is. So terminals are **login
+  shells**, and a login shell reads `/etc/profile` and `~/.bash_profile` —
+  never `~/.bashrc`, which is the only file `conda init` writes to.
+- Docker Stacks images keep their conda hook in `/home/jovyan/.bashrc` and ship
+  no `/etc/profile.d` entry. Since `$HOME` is the user's NFS home, that file is
+  not read either.
+
+`/etc/profile.d` is the one hook both distro families source for login shells.
+Mounting there is additive — a filename no image ships, in a directory that
+already exists — so unlike `/etc/passwd` it hides nothing. The conda prefix is
+probed (`/opt/conda`, `/srv/conda`, then `PATH`) rather than assumed, since all
+three are in use across the images launched here.
+
 ## Session password
 
 The `add-passwd-to-cfg` init container writes the generated password into the
