@@ -8,6 +8,28 @@
   idle_timeout = 3600
   idle_check_interval = 300
 
+  # Hard ceiling on a session's life, whatever it is doing.
+  #
+  # This used to be a "Wall time (hours)" field on the form. It was asking
+  # users to answer an HPC scheduling question that does not apply here:
+  # Kubernetes has no concept of a job time limit, so the value only ever
+  # became a pod.kubernetes.io/lifetime annotation, which does nothing unless
+  # OSC's job-pod-reaper is deployed to watch for it -- and OnDemand does not
+  # display it either, since the k8s adapter reports elapsed wallclock_time but
+  # no wallclock_limit. So the field cost every user a decision and, absent the
+  # reaper, bought nothing.
+  #
+  # It is kept as a fixed value rather than dropped, because it covers the one
+  # case idle culling structurally cannot: shutdown_no_activity_timeout tracks
+  # HTTP activity, so a browser tab left open in the foreground keeps a session
+  # alive indefinitely no matter how long nobody touches it. This is the only
+  # thing that eventually reclaims that GPU.
+  #
+  # Harmless either way -- enforced if the reaper is running, inert if not.
+  # Must not be left nil: the form field is gone, so `wall_time.to_i` would be
+  # 0 and render a 00h00m00s lifetime, which a reaper would honour instantly.
+  max_session_hours = 12
+
   # Validate the user-supplied image reference before it touches any YAML.
   # ood_core's pod.yml.erb emits the main container's image field unquoted,
   # so a value containing ": ", "#", or a newline can restructure the
@@ -23,7 +45,7 @@
 -%>
 ---
 script:
-  wall_time: "<%= wall_time.to_i * 3600 %>"
+  wall_time: "<%= max_session_hours * 3600 %>"
   # Requested only when the user asked for at least one. ood_core renders this
   # into the pod's resource limits AND requests as
   #

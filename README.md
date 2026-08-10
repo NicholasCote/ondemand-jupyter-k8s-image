@@ -123,7 +123,39 @@ shut down 40s after polling stopped. So
 `cull_connected` stays `False` on purpose. Culling a kernel that still has a
 browser attached destroys the user's variables while the tab keeps polling, so
 the pod stays up and the GPU is not returned — all of the cost, none of the
-benefit. Only `wall_time` plus a reaper closes that last gap.
+benefit.
+
+### The hard ceiling, and why wall time is not on the form
+
+`max_session_hours` in `submit.yml.erb` (12h) covers the foreground-tab case
+that idle culling structurally cannot. It reaches the pod as
+
+```yaml
+metadata:
+  annotations:
+    pod.kubernetes.io/lifetime: 12h00m00s
+```
+
+**Kubernetes ignores that annotation.** It does something only if
+[OSC/job-pod-reaper](https://github.com/OSC/job-pod-reaper) is deployed to
+watch for it — enforced if so, inert if not. The reaper matches pods carrying a
+`job` label, which ood_core already stamps on every pod, so nothing is needed
+here beyond deploying it. Check with:
+
+```bash
+kubectl get deploy -A | grep -i reap
+grep USE_JOB_POD_REAPER /etc/ood/config/hooks.env   # on the OnDemand host
+```
+
+This used to be a **Wall time (hours)** form field. It was asking users to
+answer an HPC scheduling question that does not apply: Kubernetes has no job
+time limit, OnDemand never displays the value (the adapter reports elapsed
+`wallclock_time` but no `wallclock_limit`), and without the reaper it did
+nothing at all. Fixing it in the template keeps the backstop and drops the
+question.
+
+Do not let it go nil. The form field is gone, so `wall_time.to_i` would be `0`
+and render a `00h00m00s` lifetime — which a reaper would honour immediately.
 
 ## GPUs
 
@@ -218,7 +250,7 @@ correctly; it is just weaker than it looks. That is upstream, not this app.
 | File | Purpose |
 | --- | --- |
 | `manifest.yml` | App name, category, and description shown in OnDemand |
-| `form.yml` | Launch form fields (image, CPUs, memory, wall time) |
+| `form.yml` | Launch form fields (image, CPUs, memory, GPU) |
 | `submit.yml.erb` | Kubernetes container spec, mounts, configmap, init containers |
 | `view.html.erb` | Session connect button |
 | `info.md.erb` | Image shown on the session card |
