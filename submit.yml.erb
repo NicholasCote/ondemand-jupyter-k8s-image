@@ -60,6 +60,19 @@ script:
   # to_i is load-bearing, not decoration: this value is interpolated unquoted,
   # so anything that is not a plain integer could restructure the YAML the same
   # way an unvalidated image reference could.
+  #
+  # If a GPU session sits in Pending, suspect a node taint before anything
+  # here. ood_core's pod template emits nodeSelector but has no tolerations
+  # support at all, so if the GPU nodes carry one -- nvidia.com/gpu=present:
+  # NoSchedule is common -- this app cannot schedule onto them and no change
+  # below will fix it, because there is no field to set. Check with:
+  #
+  #   kubectl get nodes -o custom-columns=\
+  #   'NODE:.metadata.name,GPU:.status.allocatable.nvidia\.com/gpu,TAINTS:.spec.taints'
+  #
+  # Tainted leaves three options, all outside this file: remove the taint,
+  # admit these pods with a mutating webhook, or carry a patched pod template.
+  # Merely labelled is easy -- add the label under native.node_selector.
 <%- if gpus.to_i > 0 -%>
   gpus_per_node: <%= gpus.to_i %>
 <%- end -%>
@@ -381,6 +394,12 @@ script:
       # The extra lines are harmless where they do not apply -- on 2.x they
       # cost one "ServerApp.password config is deprecated in 2.0" warning, and
       # the value is identical either way, so nothing can disagree.
+      #
+      # Upstream wart, not ours: ood-k8s-utils' create_salt_and_sha1 does
+      # SALT="$(create_passwd 16)", but create_passwd exports PASSWORD rather
+      # than writing to stdout, so SALT is always empty and these hashes are
+      # unsalted sha1(password). It authenticates correctly, it is just weaker
+      # than it looks. Fixing it means patching the utility image.
       #
       # '\\\\047' is not over-escaped: this string is parsed as YAML twice
       # before bash sees it, once by OnDemand reading this file and once by
