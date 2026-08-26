@@ -3,38 +3,11 @@
   utility_img = "docker.io/ohiosupercomputer/ood-k8s-utils:latest"
   user = OodSupport::User.new
 
-  # How long a session may sit idle before it ends itself, and how often that
-  # is checked. One place to change both; see the culling settings below.
   idle_timeout = 3600
   idle_check_interval = 300
 
-  # Hard ceiling on a session's life, whatever it is doing.
-  #
-  # This used to be a "Wall time (hours)" field on the form. It was asking
-  # users to answer an HPC scheduling question that does not apply here:
-  # Kubernetes has no concept of a job time limit, so the value only ever
-  # became a pod.kubernetes.io/lifetime annotation, which does nothing unless
-  # OSC's job-pod-reaper is deployed to watch for it -- and OnDemand does not
-  # display it either, since the k8s adapter reports elapsed wallclock_time but
-  # no wallclock_limit. So the field cost every user a decision and, absent the
-  # reaper, bought nothing.
-  #
-  # It is kept as a fixed value rather than dropped, because it covers the one
-  # case idle culling structurally cannot: shutdown_no_activity_timeout tracks
-  # HTTP activity, so a browser tab left open in the foreground keeps a session
-  # alive indefinitely no matter how long nobody touches it. This is the only
-  # thing that eventually reclaims that GPU.
-  #
-  # Harmless either way -- enforced if the reaper is running, inert if not.
-  # Must not be left nil: the form field is gone, so `wall_time.to_i` would be
-  # 0 and render a 00h00m00s lifetime, which a reaper would honour instantly.
   max_session_hours = 12
 
-  # Validate the user-supplied image reference before it touches any YAML.
-  # ood_core's pod.yml.erb emits the main container's image field unquoted,
-  # so a value containing ": ", "#", or a newline can restructure the
-  # generated Pod manifest. Rather than out-escape a template we don't
-  # control, reject anything that isn't a plain image reference at the door.
   image_ref = custom_image.to_s.strip
   image_ref_pattern = /\A[A-Za-z0-9][A-Za-z0-9._\-\/:@]{0,254}\z/
   unless image_ref.match?(image_ref_pattern)
@@ -46,33 +19,6 @@
 ---
 script:
   wall_time: "<%= max_session_hours * 3600 %>"
-  # Requested only when the user asked for at least one. ood_core renders this
-  # into the pod's resource limits AND requests as
-  #
-  #   nvidia.com/gpu: <n>
-  #
-  # (the key comes from native.gpu_type, which defaults to nvidia.com/gpu), and
-  # it guards the field with `unless script.gpus_per_node.nil?` -- a nil check,
-  # not a zero check. Emitting 0 would therefore still put the resource key in
-  # the spec; omitting the line keeps a CPU-only session's pod byte-identical
-  # to what this app produced before GPUs were an option.
-  #
-  # to_i is load-bearing, not decoration: this value is interpolated unquoted,
-  # so anything that is not a plain integer could restructure the YAML the same
-  # way an unvalidated image reference could.
-  #
-  # If a GPU session sits in Pending, suspect a node taint before anything
-  # here. ood_core's pod template emits nodeSelector but has no tolerations
-  # support at all, so if the GPU nodes carry one -- nvidia.com/gpu=present:
-  # NoSchedule is common -- this app cannot schedule onto them and no change
-  # below will fix it, because there is no field to set. Check with:
-  #
-  #   kubectl get nodes -o custom-columns=\
-  #   'NODE:.metadata.name,GPU:.status.allocatable.nvidia\.com/gpu,TAINTS:.spec.taints'
-  #
-  # Tainted leaves three options, all outside this file: remove the taint,
-  # admit these pods with a mutating webhook, or carry a patched pod template.
-  # Merely labelled is easy -- add the label under native.node_selector.
 <%- if gpus.to_i > 0 -%>
   gpus_per_node: <%= gpus.to_i %>
 <%- end -%>
@@ -80,37 +26,8 @@ script:
     container:
       name: "jupyter"
       image: "<%= image_ref %>"
-      # Launched through /ood-launch/launch.sh (defined in the configmap below) rather
-      # than by naming the entrypoint directly, because this app runs images we
-      # do not control and there are two incompatible conventions in the wild:
-      #
-      #   jupyter/docker-stacks  /usr/local/bin/start.sh  /opt/conda/bin/jupyter
-      #   repo2docker & cirrus   /srv/start               /srv/conda/bin/jupyter
-      #
-      # Naming either one directly fails on the other with a bare
-      # "executable file not found: No such file or directory" at container
-      # create -- no hint about which path was missing, in a message the user
-      # sees before the session ever starts. launch.sh probes for both.
-      #
-      # Every token here is space-free on purpose: ood_core renders this into the
-      # pod's `command` array, and a quoted `sh -c '...'` script would not survive
-      # if it splits on whitespace. Invoking via /bin/sh also avoids needing the
-      # configmap file to be executable, which projected volumes do not guarantee.
-      #
-      # /ood-launch, not /ood: ood_core emits one volumeMount per configmap file,
-      # so two files sharing a mount_path produce duplicate mountPaths and the
-      # API server rejects the pod outright --
-      #   spec.containers[0].volumeMounts[1].mountPath: "/ood": must be unique
       command: "/bin/sh /ood-launch/launch.sh lab --config=/ood/ondemand_config.py --ServerApp.port=8080 --ServerApp.ip=0.0.0.0"
       restart_policy: "OnFailure"
-      # Start in the user's NFS home, not wherever the image's WORKDIR points.
-      #
-      # docker-stacks bakes WORKDIR /home/jovyan into the image, and its start.sh
-      # only cd's to $HOME on the root path -- we run as the user's real UID, so
-      # that path never executes. The result is a session whose cwd is the
-      # image's throwaway /home/jovyan: Jupyter's root_dir defaults to cwd, so
-      # the file browser and every terminal open on an empty container-local
-      # directory and anything saved there dies with the pod.
       working_dir: "<%= user.home %>"
       env:
         NB_UID: "<%= user.uid %>"
@@ -127,6 +44,26 @@ script:
         host: "gladenfs.hpc.ucar.edu"
         path: "/gpfs/u/home/<%= user.name %>"
         destination_path: "<%= user.home %>"
+      - type: nfs
+        name: campaign
+        host: "gladedm1.ucar.edu"
+        path: "/gpfs/csfs1"
+        destination_path: /glade/campaign
+      - type: nfs
+        name: gdex
+        host: "gladedm1.ucar.edu"
+        path: "/gpfs/csfs1/collections/gdex"
+        destination_path: /gdex
+      - type: nfs
+        name: collections
+        host: "gladedm1.ucar.edu"
+        path: "/gpfs/csfs1/collections"
+        destination_path: /glade/collections
+      - type: nfs
+        name: work
+        host: "gladedm1.ucar.edu"
+        path: "/gpfs/csfs1/work"
+        destination_path: /glade/work
     configmap:
       files:
         - filename: "<%= configmap_filename %>"
@@ -137,64 +74,26 @@ script:
             c.ServerApp.allow_origin = '*'
             c.Application.log_level = 'DEBUG'
 
-            # Let an abandoned session end itself, so a forgotten notebook
-            # stops holding a GPU. Nothing in Kubernetes does this for us: a
-            # Pod runs until it exits or someone deletes it, and wall_time is
-            # only an annotation that needs an external reaper to mean
-            # anything. Jupyter shutting itself down needs no cluster support
-            # -- the process exits 0, and restart_policy OnFailure leaves the
-            # pod Completed rather than restarting it, which releases the GPU.
-            #
-            # Idle kernels are culled first, because the server only considers
-            # shutting down once nothing is running. Terminals count as
-            # running too, so they are culled on the same clock; an open
-            # terminal would otherwise pin the session open forever.
             c.MappingKernelManager.cull_idle_timeout = <%= idle_timeout %>
             c.MappingKernelManager.cull_interval = <%= idle_check_interval %>
-            # Never interrupt work in progress. A long training run is busy,
-            # not idle, and must not be culled out from under the user.
+
             c.MappingKernelManager.cull_busy = False
-            # Deliberately False, which is also the default -- being explicit
-            # because the aggressive setting looks right and is not. Culling a
-            # kernel that still has a browser attached destroys the user's
-            # variables while the tab keeps polling, so the pod stays up and
-            # the GPU is not returned: all of the cost, none of the benefit.
-            # With it False, a closed tab drops to zero connections and the
-            # kernel is culled normally, which is the case worth reclaiming.
+
             c.MappingKernelManager.cull_connected = False
             c.TerminalManager.cull_inactive_timeout = <%= idle_timeout %>
             c.TerminalManager.cull_interval = <%= idle_check_interval %>
-            # Then shut the server down once nothing is running and no requests
-            # have arrived. Note this tracks HTTP activity, not human activity:
-            # a browser tab left polling holds the session open regardless of
-            # whether anyone is at the keyboard.
+
             c.ServerApp.shutdown_no_activity_timeout = <%= idle_timeout %>
           mount_path: "/ood"
-        # Resolve the image's layout at runtime, inside the container, which is
-        # the only place that knows what the image actually contains. ERB cannot
-        # do this: it renders on the OnDemand host at submit time, before the
-        # image has been pulled anywhere.
-        #
-        # Deliberately plain /bin/sh -- an image may not ship bash.
-        #
-        # Mounted at its own path. Each entry here becomes a separate volumeMount,
-        # and k8s requires mountPaths to be unique, so this cannot share /ood with
-        # ondemand_config.py.
         - filename: "launch.sh"
           data: |
-            #!/bin/sh
-            # Find the startup wrapper. It is what drops privileges to NB_UID and
-            # sets the session up, so prefer it over exec'ing jupyter directly.
             for w in /usr/local/bin/start.sh /srv/start; do
               [ -x "$w" ] && { WRAP="$w"; break; }
             done
 
-            # Find jupyter. The same split applies here, and getting the wrapper
-            # right while hardcoding the wrong conda prefix just moves the error.
             for j in /opt/conda/bin/jupyter /srv/conda/bin/jupyter; do
               [ -x "$j" ] && { JUP="$j"; break; }
             done
-            # Last resort: whatever is on PATH. Covers layouts we have not seen.
             [ -n "${JUP:-}" ] || JUP="$(command -v jupyter 2>/dev/null)"
 
             if [ -z "${JUP:-}" ]; then
@@ -204,46 +103,12 @@ script:
               exit 127
             fi
 
-            # Say what was chosen. When a session misbehaves, the first question
-            # is which binaries it actually ran, and kubectl logs should answer it
-            # without anyone having to exec into the pod.
             echo "launch.sh: wrapper=${WRAP:-<none, exec jupyter directly>} jupyter=${JUP}"
 
             [ -n "${WRAP:-}" ] && exec "$WRAP" "$JUP" "$@"
             exec "$JUP" "$@"
           mount_path: "/ood-launch"
-        # Make `conda activate` work in session terminals.
-        #
-        # Without this the user gets
-        #
-        #   CondaError: Run 'conda init' before 'conda activate'
-        #
-        # and running `conda init` does not help -- it reports success, changes
-        # nothing that matters, and the next terminal fails identically. Two
-        # things combine to cause that:
-        #
-        #   1. jupyter_server_terminals appends "-l" to the shell whenever the
-        #      server's stdout is not a tty, which in a pod it never is. So
-        #      terminals are LOGIN shells, and a login shell reads /etc/profile
-        #      and ~/.bash_profile -- never ~/.bashrc, which is the only file
-        #      `conda init` writes to.
-        #   2. Docker Stacks images put their conda hook in /home/jovyan/.bashrc
-        #      and ship no /etc/profile.d entry at all. Since HOME is the user's
-        #      NFS home, that file is not read either.
-        #
-        # /etc/profile.d is the one hook both distro families source for login
-        # shells, so that is where this goes. Mounting here is additive -- a
-        # filename no image ships, in a directory that already exists -- so
-        # unlike /etc/passwd it hides nothing.
-        #
-        # The conda prefix is probed rather than assumed, for the same reason
-        # launch.sh probes: /opt/conda, /srv/conda and /opt/ncar/conda are all
-        # in use across the images people actually launch here.
-        #
-        # Guarded on BASH_VERSION because `conda shell.bash hook` emits bash
-        # syntax and /etc/profile.d is also sourced by dash. Every failure is
-        # swallowed: a login shell that cannot find conda must still be a
-        # working shell.
+
         - filename: "conda_profile.sh"
           data: |
             if [ -n "${BASH_VERSION:-}" ]; then
@@ -257,56 +122,8 @@ script:
               fi
               unset __ood_conda __ood_hook __ood_c
             fi
-          # zz- so this runs after anything the image installs here. The
-          # /srv/start images already set conda up themselves and re-evaluating
-          # the hook after them is harmless -- verified, not assumed.
           mount_path: "/etc/profile.d/zz-ood-conda.sh"
           sub_path: "conda_profile.sh"
-        # Give the UID we run as a name.
-        #
-        # The pod's securityContext is runAsUser: <the user's real UID>, but the
-        # image's /etc/passwd only knows the UID it was built with (1000/jovyan).
-        # Every getpwuid() lookup then fails, which surfaces as the
-        # "I have no name!" bash prompt and, less visibly, as git and conda
-        # tripping over a missing username, home, and shell.
-        #
-        # docker-stacks' start.sh tries to patch /etc/passwd itself, but only
-        # when the file is writable, which assumes GID 0. We run as the user's
-        # real GID, so it logs "unable to fix missing /etc/passwd entry" and
-        # carries on nameless. Supplying the file needs no cooperation from the
-        # image and works on the /srv/start images too, which never attempt it.
-        #
-        # We ADD to the image's accounts, we do not replace them. An earlier
-        # version of this file listed only root, the user, and nobody, which
-        # crashlooped every docker-stacks image: start.sh runs under `set -e`
-        # and line 193 is
-        #
-        #   JOVYAN_UID="$(id -u jovyan 2>/dev/null)"
-        #
-        # `id` exits 1 when the user does not exist, an assignment inherits the
-        # status of its command substitution, and the script died right there --
-        # after the start-notebook.d hooks, before exec'ing jupyter, with no
-        # error message. jovyan (1000:100) is the default user for both
-        # docker-stacks and repo2docker, so it stays, as do the system accounts.
-        #
-        # Order matters: the real user is listed BEFORE jovyan so that if a
-        # user's UID is itself 1000, getpwuid(1000) resolves to them while
-        # getpwnam("jovyan") still succeeds for start.sh.
-        #
-        # sub_path is what makes this safe: without it the configmap volume
-        # would mount over all of /etc and take the image's resolv.conf and ssl
-        # certs with it. With it, k8s projects this one key over that one file.
-        #
-        # Shell is hardcoded to /bin/bash rather than read from the user's HPC
-        # passwd entry: a login shell of /bin/tcsh is common here and almost
-        # never present in a Jupyter image, and a shell that does not exist
-        # breaks terminals as thoroughly as no passwd entry at all.
-        # Only the entries that are actually needed, and nothing distro-specific.
-        # An earlier version padded these files with daemon/bin/sys/nobody taken
-        # from a Debian image, which is wrong on a RHEL-based one: those two
-        # families disagree outright (Debian daemon=1 bin=2, RHEL bin=1
-        # daemon=2), so the padding mislabelled real GIDs. A missing name is a
-        # cosmetic annoyance; a wrong name is a lie that `ls -l` repeats.
         - filename: "passwd"
           data: |
             root:x:0:0:root:/root:/bin/bash
@@ -314,32 +131,6 @@ script:
             jovyan:x:1000:100:default container user:/home/jovyan:/bin/bash
           mount_path: "/etc/passwd"
           sub_path: "passwd"
-        # Groups, seeded from this host's own group database.
-        #
-        # A GID with no name is not merely untidy: `groups` prints
-        #
-        #   groups: cannot find name for group ID 39
-        #
-        # to the terminal, and an end user has no way to tell that from a real
-        # problem. The case that shows up in practice is a GPU session, where
-        # the runtime attaches the group owning /dev/nvidia* so the container
-        # can open the device -- GID 39 here. That group is doing its job; it
-        # is what lets nvidia-smi see the card. It just had no name, because
-        # mounting this file at all hides the names the image shipped.
-        #
-        # The names cannot be hardcoded -- that is what mislabelled GIDs 1 and
-        # 2 on RHEL-based images -- and they cannot be read from the image,
-        # which is not pulled anywhere at submit time. But they do not need to
-        # be either: the supplementary GIDs a container ends up with are
-        # assigned by the node, not the image, so the node's numbering is the
-        # one that matters, and this host shares it. So copy the local system
-        # groups verbatim rather than guessing at any of them.
-        #
-        # Only GID < 1000, i.e. the system range, which is where injected
-        # device groups live. Everything above it is user and LDAP territory:
-        # unbounded, irrelevant here, and not ours to publish into a container.
-        # Reading the file directly rather than via Etc.group is what keeps
-        # that promise -- Etc.group walks all of NSS, LDAP included.
         - filename: "group"
           data: |
             root:x:0:
@@ -376,35 +167,6 @@ script:
         command:
           - "/bin/save_passwd_as_secret"
           - "user-<%= user.name %>"
-      # Write the session password under every trait name Jupyter has used for
-      # it, for the same reason launch.sh probes for two directory layouts: we
-      # do not control the image, and the correct name depends on its vintage.
-      #
-      #   c.PasswordIdentityProvider.hashed_password  jupyter_server >= 2.0
-      #   c.ServerApp.password                        jupyter_server 1.x
-      #   c.NotebookApp.password                      classic notebook
-      #
-      # Setting only the first one silently does nothing on an older image:
-      # traitlets warns about unknown *options* on a class it knows, but an
-      # entire unknown class section is ignored without comment. The server
-      # then keeps token auth, the Connect button's POST gets a 401, and the
-      # user lands on "Token authentication is enabled" with no clue why.
-      # Confirmed on an image pinned to jupyter_server 1.21.0 / notebook 6.5.1.
-      #
-      # The extra lines are harmless where they do not apply -- on 2.x they
-      # cost one "ServerApp.password config is deprecated in 2.0" warning, and
-      # the value is identical either way, so nothing can disagree.
-      #
-      # Upstream wart, not ours: ood-k8s-utils' create_salt_and_sha1 does
-      # SALT="$(create_passwd 16)", but create_passwd exports PASSWORD rather
-      # than writing to stdout, so SALT is always empty and these hashes are
-      # unsalted sha1(password). It authenticates correctly, it is just weaker
-      # than it looks. Fixing it means patching the utility image.
-      #
-      # '\\\\047' is not over-escaped: this string is parsed as YAML twice
-      # before bash sees it, once by OnDemand reading this file and once by
-      # kubectl reading the pod spec ood_core renders it into. Each pass halves
-      # the backslashes, leaving printf '\047' -> a single quote.
       - name: "add-passwd-to-cfg"
         image: "<%= utility_img %>"
         command:
