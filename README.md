@@ -52,41 +52,6 @@ Launch the app, then use **Connect to Jupyter** on the session card. Each
 session gets its own password and the button submits it for you; there is no
 token to copy from a log.
 
-## SSH to Casper/Derecho without the MFA prompt
-
-Every `ssh casper.hpc.ucar.edu` from a session terminal would otherwise stop at
-`ncar-two-factor:`. HSG's
-[`bao-getkey`](https://github.com/NCAR/hsg-openbao-scripts) trades one
-password+Duo login for a short-lived signed SSH certificate and loads it into
-ssh-agent. After that, ssh to the HSG systems uses the certificate and does not
-ask again until it expires:
-
-```bash
-bao-getkey          # password + Duo, once
-ssh casper.hpc.ucar.edu
-```
-
-When ssh starts prompting again, the certificate has expired. Run `bao-getkey`
-again. Notebooks share the same agent, so `!ssh casper.hpc.ucar.edu ...` in a
-cell works too.
-
-**Only in images that ship it.** This app does not build an image, so
-`bao-getkey` (and `curl`, `jq`, `ssh-agent`, `ssh-add`) have to come from the
-image chosen on the form. What this app does is start one ssh-agent per
-session, before Jupyter starts, so every terminal and kernel inherits
-`SSH_AUTH_SOCK`. The socket lives on container-local `/tmp`, not the NFS home,
-so it ends with the session and is never shared between sessions. The key is
-held only in agent memory and never written to `~/.ssh`. The session log line
-`launch.sh: ... ssh_auth_sock=... bao_getkey=...` shows whether a given image
-has both. The default `jhub-cpu-nb:0.1.5` has `ssh-agent` but not `bao-getkey`
-or `jq` yet; those belong in
-[`cirrus-jhub-images`](https://github.com/NCAR/cirrus-jhub-images).
-
-If your `~/.bashrc` or `~/.bash_profile` starts its own `ssh-agent`, that agent
-replaces `SSH_AUTH_SOCK` in each new terminal, and a certificate loaded in one
-terminal is invisible in the next. Start an agent there only when
-`SSH_AUTH_SOCK` is unset.
-
 ## Files
 
 | File | Purpose |

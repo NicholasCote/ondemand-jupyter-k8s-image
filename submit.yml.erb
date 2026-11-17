@@ -34,7 +34,6 @@ script:
         NB_USER: "<%= user.name %>"
         NB_GID: "<%= user.group.id %>"
         HOME: "<%= user.home %>"
-        USER: "<%= user.name %>"
         JUPYTER_RUNTIME_DIR: "/tmp/jupyter/runtime"
       port: 8080
       cpu: "<%= cpu %>"
@@ -104,27 +103,7 @@ script:
               exit 127
             fi
 
-            # One ssh-agent for the whole session, so `bao-getkey` has somewhere
-            # to load its signed OpenBao certificate and ssh to Casper/Derecho
-            # stops prompting for ncar-two-factor. Exported BEFORE jupyter is
-            # exec'd: that is the only way terminals and kernels inherit it.
-            # The socket is on container-local /tmp, never the NFS home, so it
-            # ends with the pod and concurrent sessions never share one.
-            # bao-getkey itself must come from the image; images without
-            # ssh-agent skip this silently, and a failed agent is a warning,
-            # never a failed launch.
-            if command -v ssh-agent >/dev/null 2>&1; then
-              SSH_AUTH_SOCK="/tmp/ssh-agent-$(id -u).sock"
-              rm -f "$SSH_AUTH_SOCK"
-              if ssh-agent -a "$SSH_AUTH_SOCK" >/dev/null; then
-                export SSH_AUTH_SOCK
-              else
-                echo "launch.sh: WARNING ssh-agent failed to start; bao-getkey will not work in this session." >&2
-                unset SSH_AUTH_SOCK
-              fi
-            fi
-
-            echo "launch.sh: wrapper=${WRAP:-<none, exec jupyter directly>} jupyter=${JUP} ssh_auth_sock=${SSH_AUTH_SOCK:-none} bao_getkey=$(command -v bao-getkey 2>/dev/null || echo none)"
+            echo "launch.sh: wrapper=${WRAP:-<none, exec jupyter directly>} jupyter=${JUP}"
 
             [ -n "${WRAP:-}" ] && exec "$WRAP" "$JUP" "$@"
             exec "$JUP" "$@"
