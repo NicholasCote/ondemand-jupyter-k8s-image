@@ -3,10 +3,17 @@
   utility_img = "docker.io/ohiosupercomputer/ood-k8s-utils:latest"
   user = OodSupport::User.new
 
+  # A session ends after idle_timeout with no activity, or after
+  # max_session_hours no matter what. Enforced by launch.sh below.
   idle_timeout = 3600
   idle_check_interval = 300
-
   max_session_hours = 12
+
+  # Activity is any of: a notebook cell run, terminal input/output, a kernel
+  # still busy, or at least busy_cpu_ms of CPU per check outside the Jupyter
+  # server (catches background jobs). The server's own CPU is excluded because
+  # an open browser tab keeps it busy polling.
+  busy_cpu_ms = 1000
 
   image_ref = custom_image.to_s.strip
   image_ref_pattern = /\A[A-Za-z0-9][A-Za-z0-9._\-\/:@]{0,254}\z/
@@ -15,6 +22,10 @@
           "Expected something like registry.example.com/namespace/image:tag " \
           "(letters, digits, '.', '_', '-', '/', ':', '@' only; no spaces or quotes)."
   end
+
+  # Free text from the site user database; ':' or a newline would corrupt
+  # the /etc/passwd line below.
+  gecos = user.gecos.to_s.gsub(/[:\r\n]/, " ").strip
 -%>
 ---
 script:
@@ -38,6 +49,12 @@ script:
       port: 8080
       cpu: "<%= cpu %>"
       memory: "<%= memory %>Gi"
+      # launch.sh keeps the port closed until the init containers have written
+      # the password and base URL, so allow up to 5 minutes to come up.
+      startup_probe:
+        initial_delay_seconds: 5
+        failure_threshold: 60
+        period_seconds: 5
     mounts:
       - type: nfs
         name: home
@@ -72,7 +89,7 @@ script:
             c.ServerApp.ip = '0.0.0.0'
             c.ServerApp.disable_check_xsrf = True
             c.ServerApp.allow_origin = '*'
-            c.Application.log_level = 'DEBUG'
+            c.Application.log_level = 'INFO'
 
             c.MappingKernelManager.cull_idle_timeout = <%= idle_timeout %>
             c.MappingKernelManager.cull_interval = <%= idle_check_interval %>
@@ -80,16 +97,42 @@ script:
             c.MappingKernelManager.cull_busy = False
 
             c.MappingKernelManager.cull_connected = False
-            c.TerminalManager.cull_inactive_timeout = <%= idle_timeout %>
-            c.TerminalManager.cull_interval = <%= idle_check_interval %>
 
             c.ServerApp.shutdown_no_activity_timeout = <%= idle_timeout %>
           mount_path: "/ood"
         - filename: "launch.sh"
           data: |
-            for w in /usr/local/bin/start.sh /srv/start; do
-              [ -x "$w" ] && { WRAP="$w"; break; }
+            #!/bin/sh
+            # Plain /bin/sh: an image may not ship bash.
+            set -u
+            # As PID 1 this shell ignores SIGTERM unless it handles it.
+            trap 'exit 0' TERM INT
+
+            CFG=/ood/ondemand_config.py
+
+            # The init containers add the password and base URL to $CFG after
+            # this volume is already mounted. Wait for both rather than racing
+            # them: losing that race starts Jupyter with no password and the
+            # wrong URL, and the Connect button fails with no clue why.
+            has_cfg() {
+              grep -q '^c\.PasswordIdentityProvider\.hashed_password=' "$CFG" 2>/dev/null &&
+                grep -q '^c\.ServerApp\.base_url=' "$CFG" 2>/dev/null
+            }
+            i=0
+            until has_cfg || [ "$i" -ge 120 ]; do
+              i=$((i + 1))
+              sleep 1
             done
+            if ! has_cfg; then
+              echo "launch.sh: gave up after ${i}s waiting for the session password and base URL in $CFG." >&2
+              echo "  They are written by the add-passwd-to-cfg and add-hostport-to-cfg init containers." >&2
+              exit 1
+            fi
+
+            # docker-stacks images start through start.sh. Other images
+            # (repo2docker, Cirrus JupyterHub) run jupyter directly.
+            WRAP=""
+            [ -x /usr/local/bin/start.sh ] && WRAP=/usr/local/bin/start.sh
 
             for j in /opt/conda/bin/jupyter /srv/conda/bin/jupyter; do
               [ -x "$j" ] && { JUP="$j"; break; }
@@ -103,11 +146,133 @@ script:
               exit 127
             fi
 
-            echo "launch.sh: wrapper=${WRAP:-<none, exec jupyter directly>} jupyter=${JUP}"
+            PY="$(dirname "$JUP")/python"
+            [ -x "$PY" ] || PY="$(command -v python3 2>/dev/null)"
+            BASE="$(sed -n "s/^c\.ServerApp\.base_url='\(.*\)'$/\1/p" "$CFG" | tail -n 1)"
+            # Private token so the watchdog can ask Jupyter what is running.
+            # The Connect button still logs in with the session password.
+            TOKEN="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')"
 
-            [ -n "${WRAP:-}" ] && exec "$WRAP" "$JUP" "$@"
-            exec "$JUP" "$@"
+            echo "launch.sh: wrapper=${WRAP:-<none>} jupyter=${JUP} python=${PY:-none} (config ready after ${i}s)"
+
+            IDLE_TIMEOUT=<%= idle_timeout %>
+            IDLE_CHECK=<%= idle_check_interval %>
+            MAX_SECONDS=<%= max_session_hours * 3600 %>
+            BUSY_CPU_MS=<%= busy_cpu_ms %>
+            CULLED=/tmp/ood-session-ended
+            rm -f "$CULLED"
+            STARTED="$(date +%s)"
+            TICK="$(getconf CLK_TCK 2>/dev/null || echo 100)"
+
+            # CPU used by the whole pod, in ms, from the cgroup. Unlike /proc,
+            # it includes processes that have already exited.
+            pod_cpu_ms() {
+              if [ -r /sys/fs/cgroup/cpu.stat ]; then
+                awk '/^usage_usec/ { print int($2 / 1000) }' /sys/fs/cgroup/cpu.stat
+              elif [ -r /sys/fs/cgroup/cpuacct/cpuacct.usage ]; then
+                awk '{ print int($1 / 1000000) }' /sys/fs/cgroup/cpuacct/cpuacct.usage
+              fi
+            }
+
+            # CPU used by the Jupyter server process alone, in ms. Subtracted
+            # from the pod total, so an open tab's polling is not activity.
+            server_cpu_ms() {
+              awk -v t="$TICK" '{ sub(/.*\) /, ""); print int(($12 + $13) * 1000 / t) }' \
+                "/proc/$JPID/stat" 2>/dev/null
+            }
+
+            # Latest kernel or terminal activity as epoch seconds (now if a
+            # kernel is busy); empty if Jupyter could not be asked.
+            api_last_activity() {
+              [ -n "$PY" ] || return 0
+              OOD_TOKEN="$TOKEN" "$PY" /ood-launch/ood_activity.py "http://127.0.0.1:8080${BASE}" 2>/dev/null
+            }
+
+            if [ -n "$WRAP" ]; then
+              JUPYTER_TOKEN="$TOKEN" "$WRAP" "$JUP" "$@" &
+            else
+              JUPYTER_TOKEN="$TOKEN" "$JUP" "$@" &
+            fi
+            JPID=$!
+
+            (
+              PREV_POD="$(pod_cpu_ms)"
+              PREV_SRV="$(server_cpu_ms)"
+              LAST_ACTIVE="$STARTED"
+              WARNED=""
+
+              while sleep "$IDLE_CHECK"; do
+                kill -0 "$JPID" 2>/dev/null || exit 0
+                NOW="$(date +%s)"
+
+                API_LAST="$(api_last_activity)"
+                if [ -z "$API_LAST" ]; then
+                  # Cannot tell, so count it as activity rather than risk
+                  # ending a session someone is using.
+                  [ -n "$WARNED" ] || echo "launch.sh: WARNING could not read kernel/terminal activity from Jupyter; only the ${MAX_SECONDS}s limit will end this session." >&2
+                  WARNED=1
+                  LAST_ACTIVE="$NOW"
+                elif [ "$API_LAST" -gt "$LAST_ACTIVE" ]; then
+                  LAST_ACTIVE="$API_LAST"
+                fi
+
+                if [ -n "$PREV_POD" ]; then
+                  CUR_POD="$(pod_cpu_ms)"
+                  CUR_SRV="$(server_cpu_ms)"
+                  if [ -n "$CUR_POD" ] && [ -n "$CUR_SRV" ]; then
+                    if [ $(( (CUR_POD - PREV_POD) - (CUR_SRV - PREV_SRV) )) -ge "$BUSY_CPU_MS" ]; then
+                      LAST_ACTIVE="$NOW"
+                    fi
+                    PREV_POD="$CUR_POD"
+                    PREV_SRV="$CUR_SRV"
+                  fi
+                fi
+
+                if [ $(( NOW - STARTED )) -ge "$MAX_SECONDS" ]; then
+                  echo "launch.sh: session reached its maximum length of ${MAX_SECONDS}s." >&2
+                elif [ $(( NOW - LAST_ACTIVE )) -ge "$IDLE_TIMEOUT" ]; then
+                  echo "launch.sh: no notebook or terminal activity for $(( NOW - LAST_ACTIVE ))s (limit ${IDLE_TIMEOUT}s)." >&2
+                else
+                  continue
+                fi
+                echo "launch.sh: ending this session so it stops holding its CPU, memory, and GPU. Relaunch from OnDemand when you need it; your files are in your home directory." >&2
+                : > "$CULLED"
+                kill -TERM "$JPID" 2>/dev/null
+                exit 0
+              done
+            ) &
+
+            # Pod deletion signals this script (PID 1), not Jupyter; pass it on
+            # and let Jupyter shut its kernels down cleanly.
+            trap 'kill -TERM "$JPID" 2>/dev/null; wait "$JPID"; exit 0' TERM INT
+
+            wait "$JPID"
+            RC=$?
+            # Exit 0 when ended on purpose: restart_policy is OnFailure, so
+            # anything else would restart the session.
+            [ -f "$CULLED" ] && exit 0
+            exit "$RC"
           mount_path: "/ood-launch"
+        - filename: "ood_activity.py"
+          data: |
+            # Used by launch.sh: prints the latest kernel or terminal activity
+            # as epoch seconds, or now if a kernel is busy.
+            import json, os, sys, time, urllib.request
+            from datetime import datetime
+
+            def get(path):
+                req = urllib.request.Request(
+                    sys.argv[1] + "api/" + path,
+                    headers={"Authorization": "token " + os.environ["OOD_TOKEN"]})
+                with urllib.request.urlopen(req, timeout=20) as r:
+                    return json.load(r)
+
+            items = get("kernels") + get("terminals")
+            if any(i.get("execution_state") == "busy" for i in items):
+                print(int(time.time()))
+            else:
+                print(max([0] + [int(datetime.fromisoformat(i["last_activity"].replace("Z", "+00:00")).timestamp())
+                                 for i in items if i.get("last_activity")]))
 
         - filename: "conda_profile.sh"
           data: |
@@ -127,7 +292,7 @@ script:
         - filename: "passwd"
           data: |
             root:x:0:0:root:/root:/bin/bash
-            <%= user.name %>:x:<%= user.uid %>:<%= user.group.id %>:<%= user.gecos %>:<%= user.home %>:/bin/bash
+            <%= user.name %>:x:<%= user.uid %>:<%= user.group.id %>:<%= gecos %>:<%= user.home %>:/bin/bash
             jovyan:x:1000:100:default container user:/home/jovyan:/bin/bash
           mount_path: "/etc/passwd"
           sub_path: "passwd"
