@@ -19,8 +19,8 @@ attributes:
       `quay.io/jupyter/scipy-notebook:latest`, `quay.io/jupyter/datascience-notebook:latest`,
       `quay.io/jupyter/tensorflow-notebook:latest`.
 
-      Sessions shut down after **1 hour with no browser connected**, and after
-      **12 hours** in any case. Save your work in your home directory.
+      Sessions shut down after about **1 hour with no browser connected** and
+      nothing running. Save your work in your home directory.
     required: true
   cpu:
     widget: number_field
